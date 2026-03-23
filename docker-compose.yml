@@ -1,0 +1,96 @@
+services:
+  openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.openclaw
+    image: openclaw:local
+    container_name: openclaw
+    ports:
+      - "18789:18789"
+    environment:
+      - TZ=Asia/Shanghai
+      - AUTH_PASSWORD=${AUTH_PASSWORD}
+      - COPILOT_GITHUB_TOKEN=${COPILOT_GITHUB_TOKEN}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
+      - OPENCLAW_GATEWAY_BIND=lan
+    user: root
+    entrypoint: >
+      sh -c '
+        mkdir -p /home/node/.openclaw/canvas /home/node/.openclaw/cron /home/node/.openclaw/devices /home/node/.openclaw/agents /home/node/.openclaw/media/browser &&
+        mkdir -p /data/workspace/skills /data/workspace/memory &&
+        cp /tmp/openclaw.json.src /home/node/.openclaw/openclaw.json &&
+        chown node:node /home/node/.openclaw /home/node/.openclaw/openclaw.json /home/node/.openclaw/canvas /home/node/.openclaw/cron /home/node/.openclaw/devices /home/node/.openclaw/agents /home/node/.openclaw/media /home/node/.openclaw/media/browser &&
+        chown node:node /data /data/workspace /data/workspace/skills /data/workspace/memory &&
+        rm -f /home/node/.openclaw/agents/main/agent/models.json &&
+        exec su node -s /bin/sh -c "exec openclaw gateway --allow-unconfigured"
+      '
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - openclaw-home:/home/node/.openclaw
+      - openclaw-data:/data
+      - ./openclaw/openclaw.json:/tmp/openclaw.json.src:ro
+      - ./openclaw/skills/web/SKILL.md:/data/workspace/skills/web/SKILL.md:ro
+      - screenshot-media:/home/node/.openclaw/media/browser
+    depends_on:
+      skillserver:
+        condition: service_started
+    restart: always
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:18789/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    networks:
+      - ai-bridge
+
+  skillserver:
+    build:
+      context: ./skillserver
+      dockerfile: Dockerfile.skillserver
+    image: skillserver:local
+    container_name: skillserver
+    expose:
+      - "3000"
+    environment:
+      - TZ=Asia/Shanghai
+      - HOST=0.0.0.0
+      - PORT=3000
+      - SEARXNG_URL=http://searxng:8080
+      - SEARXNG_TIMEOUT=15
+      - PAGE_TIMEOUT=30000
+      - FETCH_CONCURRENCY=3
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./skillserver/server.py:/app/server.py:ro
+      - ./skillserver/web_core.py:/app/web_core.py:ro
+      - screenshot-media:/tmp/screenshots
+    depends_on:
+      - searxng
+    restart: always
+    networks:
+      - ai-bridge
+
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    expose:
+      - "8080"
+    environment:
+      - TZ=Asia/Shanghai
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    restart: always
+    networks:
+      - ai-bridge
+
+networks:
+  ai-bridge:
+    driver: bridge
+
+volumes:
+  openclaw-home:
+  openclaw-data:
+  screenshot-media:
