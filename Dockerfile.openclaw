@@ -1,17 +1,19 @@
 FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV=production
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    git \
-    lsof \
-    && curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
+      ca-certificates \
+      curl \
+      git \
+      lsof && \
+    rm -rf /var/lib/apt/lists/*
 
-ENV NODE_ENV=production
+ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
+ENV PATH=/home/node/.npm-global/bin:$PATH
 
-RUN chown -R node:node /usr/local/lib/node_modules/openclaw \
-    && chown -R node:node /usr/local/lib/node_modules/npm \
-    && chown node:node /usr/local/bin/openclaw /usr/local/bin/npm
+USER node
+
+RUN curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
