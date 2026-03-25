@@ -11,3 +11,7 @@ RUN apt-get update && \
     && curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
 
 ENV NODE_ENV=production
+
+RUN chown -R node:node /usr/local/lib/node_modules/openclaw \
+    && chown -R node:node /usr/local/lib/node_modules/npm \
+    && chown node:node /usr/local/bin/openclaw /usr/local/bin/npm
