@@ -16,4 +16,5 @@ ENV PATH=/home/node/.npm-global/bin:$PATH
 
 USER node
 
-RUN curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard
+RUN curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard \
+    && chown -R node:node /home/node/.npm-global
