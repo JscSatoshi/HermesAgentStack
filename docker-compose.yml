@@ -21,6 +21,8 @@ services:
         cp /tmp/openclaw.json.src /home/node/.openclaw/openclaw.json &&
         chown node:node /home/node/.openclaw /home/node/.openclaw/openclaw.json /home/node/.openclaw/canvas /home/node/.openclaw/cron /home/node/.openclaw/devices /home/node/.openclaw/agents /home/node/.openclaw/media /home/node/.openclaw/media/browser &&
         chown node:node /data /data/workspace /data/workspace/skills /data/workspace/memory &&
+        chown -R node:node /usr/local/lib/node_modules/openclaw &&
+        chown -R node:node /usr/local/lib/node_modules/npm &&
         rm -f /home/node/.openclaw/agents/main/agent/models.json &&
         exec su node -s /bin/sh -c "exec openclaw gateway --allow-unconfigured"
       '
