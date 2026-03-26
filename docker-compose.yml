@@ -18,7 +18,7 @@ services:
       sh -c '
         mkdir -p /root/.openclaw/canvas /root/.openclaw/cron /root/.openclaw/devices /root/.openclaw/agents /root/.openclaw/media/browser &&
         mkdir -p /data/workspace/skills /data/workspace/memory &&
-        cp /tmp/openclaw.json.src /root/.openclaw/openclaw.json &&
+        [ -f /root/.openclaw/openclaw.json ] || cp /tmp/openclaw.json.src /root/.openclaw/openclaw.json &&
         rm -f /root/.openclaw/agents/main/agent/models.json &&
         rm -f /root/.openclaw/gateway.lock /root/.openclaw/gateway.pid /tmp/openclaw-gateway.lock /tmp/openclaw-gateway.pid &&
         socat TCP-LISTEN:18788,reuseaddr,fork TCP:127.0.0.1:18789 &
