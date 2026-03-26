@@ -21,7 +21,7 @@ services:
         cp /tmp/openclaw.json.src /home/node/.openclaw/openclaw.json &&
         rm -f /home/node/.openclaw/agents/main/agent/models.json &&
         socat TCP-LISTEN:18788,reuseaddr,fork TCP:127.0.0.1:18789 &
-        exec openclaw gateway --allow-unconfigured --token "$OPENCLAW_GATEWAY_TOKEN"
+        exec openclaw gateway --token "$OPENCLAW_GATEWAY_TOKEN"
       '
     volumes:
       - /etc/localtime:/etc/localtime:ro
