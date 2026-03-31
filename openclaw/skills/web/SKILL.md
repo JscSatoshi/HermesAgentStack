@@ -2,20 +2,20 @@
 name: web
 description: "MANDATORY: Use this skill for ALL web access. DO NOT call browser, web_search, or web_fetch — they are disabled and will always fail. Instead use exec+curl to http://skillserver:3000/. Provides search, navigate, deep_search, screenshot via local SearXNG + Playwright."
 triggers:
-  - web
-  - browser
-  - search
-  - navigate
-  - website
-  - url
-  - internet
-  - online
-  - fetch
-  - crawl
-  - screenshot
+- web
+- browser
+- search
+- navigate
+- website
+- url
+- internet
+- online
+- fetch
+- crawl
+- screenshot
 ---
-
 # Web Search & Browser
+
 
 > ## ⛔ CRITICAL: Built-in tools are DISABLED — do NOT use them
 >
@@ -31,9 +31,7 @@ triggers:
 > This is always available and always works. Use it immediately.
 
 ## Mandatory Use Cases
-
 You MUST use this skill first before answering whenever the user asks about:
-
 - current events, latest news, recent releases, or anything time-sensitive
 - websites, products, prices, changelogs, docs, API behavior, or external services
 - anything that requires checking live internet content rather than model memory
@@ -49,6 +47,47 @@ Base URL: `http://skillserver:3000` — always use `curl -s --max-time <seconds>
 
 ---
 
+## ⚠️ URL Encoding — MANDATORY
+
+**Non-ASCII characters (Chinese, Japanese, emoji, etc.) in query params WILL cause HTTP 400 if not encoded.**
+
+Always URL-encode non-ASCII query values before passing them to curl:
+
+```bash
+# ✅ CORRECT — encode with node first
+Q=$(node -e "process.stdout.write(encodeURIComponent('贵州茅台 股价 今日'))")
+curl -s --max-time 15 "http://skillserver:3000/search?q=${Q}&language=zh-CN" | head -c 8000
+```
+
+```bash
+# ✅ CORRECT — ASCII-only query (no encoding needed)
+curl -s --max-time 15 "http://skillserver:3000/search?q=Moutai+stock+price+today" | head -c 8000
+```
+
+```bash
+# ❌ WRONG — raw non-ASCII in URL → HTTP 400 "Invalid HTTP request received."
+curl -s --max-time 15 "http://skillserver:3000/search?q=贵州茅台+股价"
+```
+
+### Parallel requests with non-ASCII queries
+
+```bash
+# ✅ CORRECT — encode first, write to /tmp, then wait+read
+Q1=$(node -e "process.stdout.write(encodeURIComponent('贵州茅台 股价'))")
+Q2=$(node -e "process.stdout.write(encodeURIComponent('宁德时代 股价'))")
+curl -s --max-time 15 "http://skillserver:3000/search?q=${Q1}&language=zh-CN" | head -c 4000 > /tmp/r1.json &
+curl -s --max-time 15 "http://skillserver:3000/search?q=${Q2}&language=zh-CN" | head -c 4000 > /tmp/r2.json &
+wait
+cat /tmp/r1.json; cat /tmp/r2.json
+```
+
+```bash
+# ❌ WRONG — non-ASCII in backgrounded curl → "Invalid HTTP request received."
+curl -s --max-time 15 "http://skillserver:3000/search?q=贵州茅台+股价&language=zh-CN" | head -c 4000 &
+```
+
+---
+
 ## 1. Search (snippets)
 
 ```bash
@@ -59,7 +98,7 @@ Returns: `{ query, total, results: [{title, url, content, published, engines, sc
 
 | Param | Default | Notes |
 |-------|---------|-------|
-| `q` | required | `+` for spaces, URL-encode special chars |
+| `q` | required | ASCII only in URL; URL-encode non-ASCII via node (see above) |
 | `categories` | `general` | `general`, `news`, `science`, `it`, `images`, `videos` |
 | `language` | `auto` | `en-US`, `zh-CN`, `ja-JP`, `all` |
 | `safe_search` | `0` | `0`=off, `1`=moderate, `2`=strict |
@@ -128,7 +167,7 @@ Do NOT wrap it in markdown image syntax. Do NOT modify it. Just paste the raw `M
 
 ## Rules
 
-1. **URL-encode** all query params (`+` for spaces, `%3A` for `:`, `%2F` for `/`)
+1. **URL-encode non-ASCII** query params using `node -e "process.stdout.write(encodeURIComponent('...'))"` — raw Chinese/Japanese/etc. cause HTTP 400
 2. **Always** include `--max-time` on every curl call
 3. Use `search` for quick lookups; `deep_search` for comprehensive research
 4. **Cite sources** with URLs; include current date for time-sensitive results
@@ -139,6 +178,7 @@ Do NOT wrap it in markdown image syntax. Do NOT modify it. Just paste the raw `M
 9. If the first search returns low-quality results, refine the query and search again before answering
 10. Prefer short, targeted queries first, then broaden only if needed
 11. If user asks "show me", "what it looks like", or needs visual verification, call `/screenshot`
+12. **For parallel requests with non-ASCII**: encode all queries first, write results to `/tmp` files, then `wait` and read — do NOT background curl with raw non-ASCII in the URL
 
 ## Query Optimization
 
@@ -147,23 +187,26 @@ Do NOT wrap it in markdown image syntax. Do NOT modify it. Just paste the raw `M
 - **Remove filler words**: "what is the", "how to", "please find" → just use the core keywords.
 - **No special operators**: `site:`, `filetype:`, quotes — these may cause empty results. Use plain keywords.
 - **Split complex questions** into 2 separate searches rather than one long query.
+- **Chinese queries**: prefer URL-encoding via node over translating to English — zh-CN searches return more relevant results for Chinese topics.
 
 ### Retry Strategy (when results are empty or weak)
 
 If a search returns 0 results or only irrelevant hits:
-1. **Simplify the query** — remove adjectives, dates, reduce to 2–3 core words
-2. **Switch language** — try `&language=en-US` if Chinese query failed, or vice versa
-3. **Try news category** — add `&categories=news` for time-sensitive topics
-4. **Use deep_search** — falls back to full page content extraction
-5. **Navigate directly** — if you know the likely URL, use `/navigate?url=...`
+1. **Check encoding first** — if query had non-ASCII, verify it was encoded; `"Invalid HTTP request received."` = encoding issue
+2. **Simplify the query** — remove adjectives, dates, reduce to 2–3 core words
+3. **Switch language** — try `&language=en-US` if Chinese query failed, or vice versa
+4. **Try news category** — add `&categories=news` for time-sensitive topics
+5. **Use deep_search** — falls back to full page content extraction
+6. **Navigate directly** — if you know the likely URL, use `/navigate?url=...`
 
 ### Examples
 
 | User asks | Good query | Bad query |
 |-----------|-----------|-----------|
-| 最新的 Claude 模型 | `Claude+model+latest+2026` | `最新的Claude模型是什么` |
-| iPhone 17 价格 | `iPhone+17+price` | `iPhone 17 售价是多少钱` |
-| 今天的新闻 | `news+today` with `&categories=news` | `今天有什么新闻` |
+| 最新的 Claude 模型 | `Claude+model+latest+2026` | `最新的Claude模型是什么` (unencoded) |
+| iPhone 17 价格 | `iPhone+17+price` | `iPhone 17 售价是多少钱` (unencoded) |
+| 今天的新闻 | `news+today` with `&categories=news` | `今天有什么新闻` (unencoded) |
+| 茅台股价 | encode → `%E8%8C%85%E5%8F%B0%E8%82%A1%E4%BB%B7` | raw `茅台股价` in URL |
 
 ## Execution Policy
 
@@ -171,6 +214,7 @@ If a search returns 0 results or only irrelevant hits:
 - Do not answer live-information questions from memory unless search fails.
 - When search succeeds, summarize the findings and include the relevant URLs.
 - When search fails, explicitly say search failed and why.
+- When `"Invalid HTTP request received."` is returned, it means URL encoding is missing — re-encode and retry immediately.
 
 ## Required Behavior Examples
 
@@ -185,3 +229,6 @@ Action: run `navigate` first, then summarize.
 
 User: `Who won the game today?`
 Action: run `search` first, then answer.
+
+User: `分析茅台股价`
+Action: `Q=$(node -e "process.stdout.write(encodeURIComponent('茅台 股价 今日'))")` → `curl .../search?q=${Q}&language=zh-CN`
