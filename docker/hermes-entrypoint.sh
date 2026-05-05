@@ -15,7 +15,7 @@ if [ "$(id -u)" = "0" ]; then
     fi
 
     mkdir -p "${HERMES_HOME}" "${HERMES_HOME}/home"
-    chown -R hermes:hermes "${HERMES_HOME}" 2>/dev/null || true
+    chown hermes:hermes "${HERMES_HOME}" "${HERMES_HOME}/home" 2>/dev/null || true
 
     if [ -f "${BOOTSTRAP_DIR}/config.yaml" ]; then
         cp "${BOOTSTRAP_DIR}/config.yaml" "${HERMES_HOME}/config.yaml"

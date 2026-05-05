@@ -1,0 +1,17 @@
+FROM ghcr.io/nesquena/hermes-webui:latest
+
+USER root
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      ffmpeg \
+      git \
+      ripgrep && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY httpscert/local-ca.crt /usr/local/share/ca-certificates/hermes-local-ca.crt
+
+RUN update-ca-certificates
+
+USER hermeswebuitoo

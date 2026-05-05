@@ -13,7 +13,7 @@ venv/
 env/
 
 # Generated local TLS assets
-skillserver/certs/*.crt
-skillserver/certs/*.csr
-skillserver/certs/*.key
-skillserver/certs/*.srl
+httpscert/*.crt
+httpscert/*.csr
+httpscert/*.key
+httpscert/*.srl

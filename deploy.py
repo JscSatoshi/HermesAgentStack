@@ -21,14 +21,15 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 
 COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
-HERMES_PORT = 9119
+DASHBOARD_PORT = 9119
 HERMES_API_PORT = 8642
-OPEN_WEBUI_PORT = 3000
+HERMES_WEBUI_PORT = 8787
 HERMES_OK_CODES: Tuple[str, ...] = ("200", "204", "301", "302", "307", "308")
 HERMES_IMAGE = "hermes-agent:local"
+HERMES_WEBUI_IMAGE = "hermes-webui:local"
 SKILLSERVER_IMAGE = "skillserver:local"
-SKILLSERVER_CERT_DIR = Path("skillserver/certs")
-SKILLSERVER_TLS_CONFIG = Path("skillserver/tls.cnf")
+HTTPS_CERT_DIR = Path("httpscert")
+HTTPS_TLS_CONFIG = HTTPS_CERT_DIR / "tls.cnf"
 SKILLSERVER_TLS_TARGET_DATE = dt.date(2999, 12, 31)
 
 
@@ -96,7 +97,7 @@ def ensure_docker() -> bool:
 
 
 def _skillserver_tls_days_remaining() -> int:
-    today = dt.datetime.utcnow().date()
+    today = dt.datetime.now(dt.UTC).date()
     return max(1, (SKILLSERVER_TLS_TARGET_DATE - today).days)
 
 
@@ -119,20 +120,20 @@ def _cert_end_year(openssl: str, cert_path: Path) -> Optional[int]:
 
 
 def ensure_skillserver_tls(root: Path) -> bool:
-    cert_dir = root / SKILLSERVER_CERT_DIR
-    tls_config = root / SKILLSERVER_TLS_CONFIG
-    ca_key = cert_dir / "skillserver-ca.key"
-    ca_cert = cert_dir / "skillserver-ca.crt"
-    server_key = cert_dir / "skillserver.key"
-    server_csr = cert_dir / "skillserver.csr"
-    server_cert = cert_dir / "skillserver.crt"
-    fullchain_cert = cert_dir / "skillserver.fullchain.crt"
-    serial_file = cert_dir / "skillserver-ca.srl"
+    cert_dir = root / HTTPS_CERT_DIR
+    tls_config = root / HTTPS_TLS_CONFIG
+    ca_key = cert_dir / "local-ca.key"
+    ca_cert = cert_dir / "local-ca.crt"
+    server_key = cert_dir / "local-https.key"
+    server_csr = cert_dir / "local-https.csr"
+    server_cert = cert_dir / "local-https.crt"
+    fullchain_cert = cert_dir / "local-https.fullchain.crt"
+    serial_file = cert_dir / "local-ca.srl"
     required = [ca_key, ca_cert, server_key, server_cert, fullchain_cert]
 
     openssl = shutil.which("openssl")
     if not openssl:
-        fail("未找到 openssl，无法生成 SkillServer HTTPS 自签证书")
+        fail("未找到 openssl，无法生成共享 HTTPS 自签证书")
         return False
 
     current_server_end_year = _cert_end_year(openssl, server_cert) if server_cert.exists() else None
@@ -145,12 +146,12 @@ def ensure_skillserver_tls(root: Path) -> bool:
         and current_ca_end_year is not None
         and current_ca_end_year >= SKILLSERVER_TLS_TARGET_DATE.year
     ):
-        ok("复用已有 SkillServer TLS 证书")
+        ok("复用已有共享 HTTPS 证书")
         return True
 
     if current_server_end_year or current_ca_end_year:
         info(
-            "SkillServer TLS 证书有效期不足，将重签到 "
+            "共享 HTTPS 证书有效期不足，将重签到 "
             f"{SKILLSERVER_TLS_TARGET_DATE.isoformat()}"
         )
     if not tls_config.exists():
@@ -179,7 +180,7 @@ def ensure_skillserver_tls(root: Path) -> bool:
             "-out",
             str(ca_cert),
             "-subj",
-            "/CN=Hermes SkillServer Local CA",
+            "/CN=Hermes Local HTTPS CA",
             "-extensions",
             "v3_ca",
             "-config",
@@ -227,7 +228,7 @@ def ensure_skillserver_tls(root: Path) -> bool:
     for args in commands:
         result = subprocess.run(args, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
-            fail("生成 SkillServer TLS 证书失败")
+            fail("生成共享 HTTPS 证书失败")
             detail = (result.stderr or result.stdout or "").strip()
             if detail:
                 print(detail)
@@ -236,7 +237,7 @@ def ensure_skillserver_tls(root: Path) -> bool:
     fullchain_cert.write_bytes(server_cert.read_bytes() + ca_cert.read_bytes())
     ca_key.chmod(0o600)
     server_key.chmod(0o600)
-    ok("已生成 SkillServer HTTPS 自签证书")
+    ok("已生成共享 HTTPS 自签证书")
     return True
 
 
@@ -256,6 +257,46 @@ def http_json(method: str, url: str, data: Optional[dict] = None, headers: Optio
             return {"error": str(exc)}
     except Exception as exc:
         return {"error": str(exc)}
+
+
+def fetch_live_models(root: Path, port: int, provider: str = "copilot") -> Optional[Dict]:
+    ca_cert = root / HTTPS_CERT_DIR / "local-ca.crt"
+    url = f"https://localhost:{port}/api/models/live?provider={urllib.parse.quote(provider)}"
+    output = run(
+        " ".join(
+            shell_quote(part)
+            for part in [
+                "curl",
+                "-sS",
+                "--cacert",
+                str(ca_cert),
+                url,
+            ]
+        ),
+        check=False,
+        timeout=30,
+    )
+    if not output:
+        return None
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError:
+        return None
+
+
+def print_live_models(payload: Dict) -> None:
+    provider = str(payload.get("provider") or "unknown")
+    models = payload.get("models") or []
+    if not isinstance(models, list):
+        fail(f"{provider} 模型列表格式异常")
+        return
+    ok(f"{provider} 可用模型数量: {len(models)}")
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        model_id = str(item.get("id") or "")
+        label = str(item.get("label") or model_id)
+        print(f"    - {model_id} | {label}")
 
 
 def read_env_var(root: Path, name: str) -> Optional[str]:
@@ -311,14 +352,16 @@ def ensure_env_secret(root: Path, name: str, comment: str, length: int = 48) -> 
 
 
 def ensure_env_defaults(root: Path) -> None:
-    write_env_var(root, "HERMES_UID", str(os.getuid()), "Docker 里 Hermes 进程使用的 UID")
-    write_env_var(root, "HERMES_GID", str(os.getgid()), "Docker 里 Hermes 进程使用的 GID")
+    if not read_env_var(root, "HERMES_UID"):
+        write_env_var(root, "HERMES_UID", str(os.getuid()), "Docker 里 Hermes 进程使用的 UID")
+    if not read_env_var(root, "HERMES_GID"):
+        write_env_var(root, "HERMES_GID", str(os.getgid()), "Docker 里 Hermes 进程使用的 GID")
     if not read_env_var(root, "HERMES_DASHBOARD_PORT"):
-        write_env_var(root, "HERMES_DASHBOARD_PORT", str(HERMES_PORT), "Hermes Dashboard 本地端口")
+        write_env_var(root, "HERMES_DASHBOARD_PORT", str(DASHBOARD_PORT), "Hermes Dashboard 本地端口")
     if not read_env_var(root, "API_SERVER_PORT"):
         write_env_var(root, "API_SERVER_PORT", str(HERMES_API_PORT), "Hermes OpenAI-compatible API server 端口")
-    if not read_env_var(root, "OPEN_WEBUI_PORT"):
-        write_env_var(root, "OPEN_WEBUI_PORT", str(OPEN_WEBUI_PORT), "Open WebUI 本地端口")
+    if not read_env_var(root, "HERMES_WEBUI_PORT"):
+        write_env_var(root, "HERMES_WEBUI_PORT", str(HERMES_WEBUI_PORT), "Hermes WebUI 本地端口")
     if not read_env_var(root, "TZ"):
         write_env_var(root, "TZ", "Asia/Shanghai", "时区")
     ensure_env_secret(root, "API_SERVER_KEY", "Hermes API Server Bearer Key")
@@ -409,8 +452,10 @@ def build_images(root: Path, force: bool = False) -> bool:
     if result.returncode != 0:
         fail("镜像构建失败")
         return False
-    if not image_exists(HERMES_IMAGE) or not image_exists(SKILLSERVER_IMAGE):
-        fail(f"镜像构建后未找到 {HERMES_IMAGE} 或 {SKILLSERVER_IMAGE}")
+    required_images = [HERMES_IMAGE, HERMES_WEBUI_IMAGE, SKILLSERVER_IMAGE]
+    missing_images = [image for image in required_images if not image_exists(image)]
+    if missing_images:
+        fail("镜像构建后缺少: " + ", ".join(missing_images))
         return False
     ok("镜像构建完成")
     return True
@@ -418,7 +463,7 @@ def build_images(root: Path, force: bool = False) -> bool:
 
 def start_stack(root: Path) -> bool:
     step(2, "启动 Hermes Stack")
-    command = f"cd {shell_quote(str(root))} && {compose_cmd()} up -d --build"
+    command = f"cd {shell_quote(str(root))} && {compose_cmd()} up -d"
     result = subprocess.run(command, shell=True)
     if result.returncode != 0:
         fail("容器启动失败")
@@ -442,8 +487,12 @@ def show_logs(root: Path) -> None:
     subprocess.run(command, shell=True)
 
 
-def check_http(port: int, ok_codes: Tuple[str, ...]) -> bool:
-    status = run(f"curl -s -o /dev/null -w '%{{http_code}}' http://localhost:{port}", check=False, timeout=10)
+def check_http(port: int, ok_codes: Tuple[str, ...], *, scheme: str = "http", ca_cert: Optional[Path] = None) -> bool:
+    command = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}"]
+    if ca_cert is not None:
+        command.extend(["--cacert", str(ca_cert)])
+    command.append(f"{scheme}://localhost:{port}")
+    status = run(" ".join(shell_quote(part) for part in command), check=False, timeout=10)
     return bool(status and status.strip("'") in ok_codes)
 
 
@@ -457,14 +506,15 @@ def wait_until(checker, timeout: int = 90, interval: int = 2) -> bool:
 
 
 def check_stack(root: Path) -> bool:
-    dashboard_port = int(read_env_var(root, "HERMES_DASHBOARD_PORT") or str(HERMES_PORT))
+    dashboard_port = int(read_env_var(root, "HERMES_DASHBOARD_PORT") or str(DASHBOARD_PORT))
     api_port = int(read_env_var(root, "API_SERVER_PORT") or str(HERMES_API_PORT))
-    open_webui_port = int(read_env_var(root, "OPEN_WEBUI_PORT") or str(OPEN_WEBUI_PORT))
+    hermes_webui_port = int(read_env_var(root, "HERMES_WEBUI_PORT") or str(HERMES_WEBUI_PORT))
+    shared_ca_cert = root / HTTPS_CERT_DIR / "local-ca.crt"
     step(1, "检查 Hermes Dashboard")
-    if wait_until(lambda: check_http(dashboard_port, HERMES_OK_CODES), timeout=90):
-        ok(f"Hermes Dashboard 在线: http://localhost:{dashboard_port}")
+    if wait_until(lambda: check_http(dashboard_port, HERMES_OK_CODES, scheme="https", ca_cert=shared_ca_cert), timeout=90):
+        ok(f"Hermes Dashboard 在线: https://localhost:{dashboard_port}")
     else:
-        fail(f"Hermes Dashboard 未响应: http://localhost:{dashboard_port}")
+        fail(f"Hermes Dashboard 未响应: https://localhost:{dashboard_port}")
         return False
 
     step(2, "检查 Hermes API Server")
@@ -477,11 +527,11 @@ def check_stack(root: Path) -> bool:
         fail(f"Hermes API Server 未响应: http://localhost:{api_port}")
         return False
 
-    step(3, "检查 Open WebUI")
-    if wait_until(lambda: check_http(open_webui_port, HERMES_OK_CODES), timeout=120):
-        ok(f"Open WebUI 在线: http://localhost:{open_webui_port}")
+    step(3, "检查 Hermes WebUI")
+    if wait_until(lambda: check_http(hermes_webui_port, HERMES_OK_CODES, scheme="https", ca_cert=shared_ca_cert), timeout=120):
+        ok(f"Hermes WebUI 在线: https://localhost:{hermes_webui_port}")
     else:
-        fail(f"Open WebUI 未响应: http://localhost:{open_webui_port}")
+        fail(f"Hermes WebUI 未响应: https://localhost:{hermes_webui_port}")
         return False
 
     step(4, "检查 SkillServer")
@@ -509,13 +559,31 @@ def check_stack(root: Path) -> bool:
         return False
 
     step(6, "检查容器状态")
-    ps = run(f"cd {shell_quote(str(root))} && {compose_cmd()} ps", check=False, timeout=30) or ""
-    required = ["hermes", "hermes-dashboard", "open-webui", "skillserver", "searxng"]
-    missing = [name for name in required if name not in ps]
+    services_output = run(
+        f"cd {shell_quote(str(root))} && {compose_cmd()} ps --services --all",
+        check=False,
+        timeout=30,
+    ) or ""
+    present_services = {line.strip() for line in services_output.splitlines() if line.strip()}
+    required = {"hermes", "dashboard", "hermes-webui", "skillserver", "searxng"}
+    missing = sorted(required - present_services)
     if missing:
         fail("缺少容器: " + ", ".join(missing))
         return False
     ok("所有核心容器都存在")
+
+    step(7, "检查 Copilot 可用模型")
+    models_payload = fetch_live_models(root, hermes_webui_port, provider="copilot")
+    if not models_payload:
+        fail("无法获取 Copilot 模型列表")
+        return False
+    if models_payload.get("provider") != "copilot":
+        fail(f"模型接口返回异常 provider: {models_payload.get('provider')}")
+        return False
+    if not models_payload.get("models"):
+        fail("Copilot 模型列表为空")
+        return False
+    print_live_models(models_payload)
     return True
 
 
@@ -529,7 +597,7 @@ def deploy(root: Path, *, force_build: bool = False, refresh_token: bool = False
     if not ensure_github_token(root, force=refresh_token):
         return 1
 
-    if force_build or not image_exists(HERMES_IMAGE) or not image_exists(SKILLSERVER_IMAGE):
+    if force_build or any(not image_exists(image) for image in [HERMES_IMAGE, HERMES_WEBUI_IMAGE, SKILLSERVER_IMAGE]):
         if not build_images(root, force=force_build):
             return 1
     else:
@@ -540,8 +608,9 @@ def deploy(root: Path, *, force_build: bool = False, refresh_token: bool = False
 
     print("")
     if check_stack(root):
-        dashboard_port = read_env_var(root, "HERMES_DASHBOARD_PORT") or str(HERMES_PORT)
-        ok(f"完成: http://localhost:{dashboard_port}")
+        dashboard_port = read_env_var(root, "HERMES_DASHBOARD_PORT") or str(DASHBOARD_PORT)
+        webui_port = read_env_var(root, "HERMES_WEBUI_PORT") or str(HERMES_WEBUI_PORT)
+        ok(f"完成: Dashboard https://localhost:{dashboard_port} | WebUI https://localhost:{webui_port}")
         return 0
     return 1
 

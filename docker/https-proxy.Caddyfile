@@ -1,0 +1,16 @@
+{
+    auto_https off
+    admin off
+}
+
+https://localhost:9119, https://127.0.0.1:9119 {
+    bind 0.0.0.0
+    tls /certs/local-https.fullchain.crt /certs/local-https.key
+    reverse_proxy dashboard:9119
+}
+
+https://localhost:8787, https://127.0.0.1:8787 {
+    bind 0.0.0.0
+    tls /certs/local-https.fullchain.crt /certs/local-https.key
+    reverse_proxy hermes-webui:8787
+}

@@ -3,8 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    SSL_CERTFILE=/app/certs/skillserver.fullchain.crt \
-    SSL_KEYFILE=/app/certs/skillserver.key
+    SSL_CERTFILE=/app/certs/local-https.fullchain.crt \
+    SSL_KEYFILE=/app/certs/local-https.key
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt ./
+COPY skillserver/requirements.txt ./requirements.txt
 RUN pip install --root-user-action=ignore -r requirements.txt \
     && playwright install --with-deps chromium \
     && rm -rf /root/.cache/ms-playwright/chromium-*/  \
@@ -22,13 +22,13 @@ RUN pip install --root-user-action=ignore -r requirements.txt \
     && rm -rf /var/lib/apt/lists/* /tmp/* /root/.cache/pip \
     && find /usr -name '*.pyc' -delete 2>/dev/null || true
 
-COPY certs/skillserver-ca.crt /usr/local/share/ca-certificates/skillserver-local-ca.crt
-COPY certs/skillserver.crt /app/certs/skillserver.crt
-COPY certs/skillserver.key /app/certs/skillserver.key
-COPY certs/skillserver.fullchain.crt /app/certs/skillserver.fullchain.crt
+COPY httpscert/local-ca.crt /usr/local/share/ca-certificates/hermes-local-ca.crt
+COPY httpscert/local-https.crt /app/certs/local-https.crt
+COPY httpscert/local-https.key /app/certs/local-https.key
+COPY httpscert/local-https.fullchain.crt /app/certs/local-https.fullchain.crt
 
 RUN update-ca-certificates \
-    && chmod 600 /app/certs/skillserver.key
+    && chmod 600 /app/certs/local-https.key
 
 EXPOSE 3000
 

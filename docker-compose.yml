@@ -12,6 +12,7 @@ services:
       HERMES_UID: ${HERMES_UID:-1000}
       HERMES_GID: ${HERMES_GID:-1000}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
+      COPILOT_GITHUB_TOKEN: ${GITHUB_TOKEN}
       API_SERVER_HOST: 0.0.0.0
       API_SERVER_PORT: ${API_SERVER_PORT:-8642}
       API_SERVER_KEY: ${API_SERVER_KEY}
@@ -21,10 +22,11 @@ services:
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - hermes-home:/opt/data
+      - hermes-agent-src:/opt/hermes
       - .:/workspace
       - ./hermes/config.yaml:/bootstrap/config.yaml:ro
       - ./hermes/SOUL.md:/bootstrap/SOUL.md:ro
-      - screenshot-media:/tmp/screenshots
+      - searxng-cache:/tmp/screenshots
     depends_on:
       skillserver:
         condition: service_healthy
@@ -48,16 +50,17 @@ services:
       HERMES_UID: ${HERMES_UID:-1000}
       HERMES_GID: ${HERMES_GID:-1000}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
+      COPILOT_GITHUB_TOKEN: ${GITHUB_TOKEN}
     command: ["dashboard", "--host", "0.0.0.0", "--no-open", "--insecure"]
-    ports:
-      - "127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}:9119"
+    expose:
+      - "9119"
     volumes:
       - /etc/localtime:/etc/localtime:ro
       - hermes-home:/opt/data
       - .:/workspace
       - ./hermes/config.yaml:/bootstrap/config.yaml:ro
       - ./hermes/SOUL.md:/bootstrap/SOUL.md:ro
-      - screenshot-media:/tmp/screenshots
+      - searxng-cache:/tmp/screenshots
     depends_on:
       hermes:
         condition: service_started
@@ -71,37 +74,51 @@ services:
     networks:
       - ai-bridge
 
-  open-webui:
+  hermes-webui:
     build:
       context: .
-      dockerfile: Dockerfile.openwebui
+      dockerfile: Dockerfile.hermeswebui
     pull_policy: never
-    image: open-webui:local
-    container_name: open-webui
-    ports:
-      - "127.0.0.1:${OPEN_WEBUI_PORT:-3000}:8080"
+    image: hermes-webui:local
+    container_name: hermes-webui
+    expose:
+      - "8787"
     environment:
-      OPENAI_API_BASE_URL: http://hermes:${API_SERVER_PORT:-8642}/v1
-      OPENAI_API_KEY: ${API_SERVER_KEY}
+      TZ: ${TZ:-Asia/Shanghai}
+      HERMES_HOME: /home/hermeswebui/.hermes
+      HERMES_CONFIG_PATH: /home/hermeswebui/.hermes/config.yaml
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      COPILOT_GITHUB_TOKEN: ${GITHUB_TOKEN}
+      HERMES_WEBUI_HOST: 0.0.0.0
+      HERMES_WEBUI_PORT: 8787
+      HERMES_WEBUI_STATE_DIR: /home/hermeswebui/.hermes/webui
+      HERMES_WEBUI_DEFAULT_WORKSPACE: /workspace
+      WANTED_UID: ${HERMES_UID:-1000}
+      WANTED_GID: ${HERMES_GID:-1000}
     depends_on:
       hermes:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/', timeout=5)"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8787/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 10s
       start_period: 40s
       retries: 5
     volumes:
-      - open-webui:/app/backend/data
+      - /etc/localtime:/etc/localtime:ro
+      - hermes-home:/home/hermeswebui/.hermes
+      - hermes-agent-src:/home/hermeswebui/.hermes/hermes-agent
+      - hermes-webui-app:/app
+      - hermes-webui-uv-cache:/uv_cache
+      - .:/workspace
     networks:
       - ai-bridge
 
   skillserver:
     build:
-      context: ./skillserver
-      dockerfile: Dockerfile.skillserver
+      context: .
+      dockerfile: skillserver/Dockerfile.skillserver
     pull_policy: never
     image: skillserver:local
     container_name: skillserver
@@ -111,8 +128,8 @@ services:
       - TZ=${TZ:-Asia/Shanghai}
       - HOST=0.0.0.0
       - PORT=3000
-      - SSL_CERTFILE=/app/certs/skillserver.fullchain.crt
-      - SSL_KEYFILE=/app/certs/skillserver.key
+      - SSL_CERTFILE=/app/certs/local-https.fullchain.crt
+      - SSL_KEYFILE=/app/certs/local-https.key
       - SEARXNG_URL=http://searxng:8080
       - SEARXNG_TIMEOUT=30
       - PAGE_TIMEOUT=30000
@@ -121,7 +138,7 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - ./skillserver/server.py:/app/server.py:ro
       - ./skillserver/web_core.py:/app/web_core.py:ro
-      - screenshot-media:/tmp/screenshots
+      - searxng-cache:/tmp/screenshots
     depends_on:
       - searxng
     restart: always
@@ -131,6 +148,25 @@ services:
       timeout: 10s
       start_period: 20s
       retries: 5
+    networks:
+      - ai-bridge
+
+  https-proxy:
+    image: caddy:2-alpine
+    container_name: hermes-https-proxy
+    ports:
+      - "127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}:9119"
+      - "127.0.0.1:${HERMES_WEBUI_PORT:-8787}:8787"
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./docker/https-proxy.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./httpscert:/certs:ro
+    depends_on:
+      dashboard:
+        condition: service_healthy
+      hermes-webui:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - ai-bridge
 
@@ -157,7 +193,8 @@ networks:
 
 volumes:
   hermes-home:
-  open-webui:
+  hermes-agent-src:
+  hermes-webui-app:
+  hermes-webui-uv-cache:
   searxng-cache:
   searxng-config:
-  screenshot-media:

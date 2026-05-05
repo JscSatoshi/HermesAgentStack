@@ -41,7 +41,7 @@ RUN python -m venv /opt/hermes/.venv && \
     cd /opt/hermes && rm -rf .git node_modules web/node_modules /root/.cache /root/.npm && \
     chmod -R a+rX /opt/hermes
 
-COPY skillserver/certs/skillserver-ca.crt /usr/local/share/ca-certificates/skillserver-local-ca.crt
+COPY httpscert/local-ca.crt /usr/local/share/ca-certificates/hermes-local-ca.crt
 COPY docker/hermes-entrypoint.sh /usr/local/bin/hermes-entrypoint.sh
 RUN update-ca-certificates && chmod +x /usr/local/bin/hermes-entrypoint.sh
 
