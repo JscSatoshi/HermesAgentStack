@@ -70,7 +70,7 @@ Hermes WebUI
 ├── Dockerfile.hermeswebui
 ├── docker/
 │   ├── hermes-entrypoint.sh
-│   └── https-proxy.Caddyfile
+│   └── https-proxy.nginx.conf
 ├── hermes/
 │   ├── config.yaml
 │   ├── SOUL.md
@@ -350,5 +350,5 @@ curl -s --max-time 15 "https://skillserver:3000/search?q=YOUR+QUERY"
 - `Dockerfile.hermes` 会克隆指定版本的 `NousResearch/hermes-agent`，在镜像内创建独立虚拟环境，并编译 Dashboard 前端
 - `Dockerfile.hermeswebui` 基于官方 Hermes WebUI 镜像扩展本仓库所需工具链与 SkillServer CA 信任
 - `skillserver/Dockerfile.skillserver` 在镜像内安装 Playwright Chromium 依赖
-- `docker/https-proxy.Caddyfile` 负责把 Dashboard 和 Hermes WebUI 统一包装成 HTTPS 出口
+- `docker/https-proxy.nginx.conf` 负责把 Dashboard 和 Hermes WebUI 统一包装成 HTTPS 出口
 - 根目录 `.venv` 只是宿主机本地开发环境，不参与容器运行
