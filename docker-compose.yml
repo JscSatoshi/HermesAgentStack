@@ -152,14 +152,14 @@ services:
       - ai-bridge
 
   https-proxy:
-    image: caddy:2-alpine
+    image: nginx:1.27-alpine
     container_name: hermes-https-proxy
     ports:
-      - "127.0.0.1:${HERMES_DASHBOARD_PORT:-9119}:9119"
-      - "127.0.0.1:${HERMES_WEBUI_PORT:-8787}:8787"
+      - "${HERMES_BIND_HOST:-0.0.0.0}:${HERMES_DASHBOARD_PORT:-9119}:9119"
+      - "${HERMES_BIND_HOST:-0.0.0.0}:${HERMES_WEBUI_PORT:-8787}:8787"
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - ./docker/https-proxy.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./docker/https-proxy.nginx.conf:/etc/nginx/nginx.conf:ro
       - ./httpscert:/certs:ro
     depends_on:
       dashboard:

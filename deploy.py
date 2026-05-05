@@ -11,6 +11,7 @@ import platform
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -119,9 +120,174 @@ def _cert_end_year(openssl: str, cert_path: Path) -> Optional[int]:
         return None
 
 
-def ensure_skillserver_tls(root: Path) -> bool:
+def _is_candidate_lan_ip(address: Optional[str]) -> bool:
+    if not address or address.startswith("127."):
+        return False
+    if address.startswith("169.254."):
+        return False
+    return True
+
+
+def _macos_interface_ipv4(interface: str) -> Optional[str]:
+    result = subprocess.run(
+        ["ipconfig", "getifaddr", interface],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if result.returncode != 0:
+        return None
+    address = (result.stdout or "").strip()
+    return address or None
+
+
+def _detect_macos_lan_ip() -> Optional[str]:
+    preferred_interfaces = ["en0", "en1", "en2"]
+    for interface in preferred_interfaces:
+        address = _macos_interface_ipv4(interface)
+        if _is_candidate_lan_ip(address):
+            return address
+
+    result = subprocess.run(
+        ["route", "-n", "get", "default"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    if result.returncode == 0:
+        for raw_line in (result.stdout or "").splitlines():
+            line = raw_line.strip()
+            if not line.startswith("interface:"):
+                continue
+            interface = line.split(":", 1)[1].strip()
+            if interface.startswith(("utun", "bridge", "docker", "lo")):
+                break
+            address = _macos_interface_ipv4(interface)
+            if _is_candidate_lan_ip(address):
+                return address
+            break
+
+    return None
+
+
+def _detect_primary_lan_ip() -> Optional[str]:
+    if platform.system() == "Darwin":
+        address = _detect_macos_lan_ip()
+        if address:
+            return address
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        address = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+    if _is_candidate_lan_ip(address):
+        return address
+    return None
+
+
+def _split_env_list(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        output.append(item)
+    return output
+
+
+def _desired_tls_names(root: Path) -> tuple[list[str], list[str]]:
+    dns_names = ["skillserver", "localhost"]
+    ip_addrs = ["127.0.0.1"]
+
+    primary_lan_ip = _detect_primary_lan_ip()
+    if primary_lan_ip:
+        ip_addrs.append(primary_lan_ip)
+
+    dns_names.extend(_split_env_list(read_env_var(root, "HERMES_TLS_EXTRA_DNS")))
+    ip_addrs.extend(_split_env_list(read_env_var(root, "HERMES_TLS_EXTRA_IPS")))
+    return _unique(dns_names), _unique(ip_addrs)
+
+
+def _desired_tls_common_name(root: Path) -> str:
+    return read_env_var(root, "HERMES_TLS_COMMON_NAME") or "hermes-local"
+
+
+def _render_tls_config(root: Path, dns_names: list[str], ip_addrs: list[str]) -> None:
     cert_dir = root / HTTPS_CERT_DIR
     tls_config = root / HTTPS_TLS_CONFIG
+    alt_name_lines = []
+    common_name = _desired_tls_common_name(root)
+
+    for index, name in enumerate(dns_names, start=1):
+        alt_name_lines.append(f"DNS.{index} = {name}")
+    for index, address in enumerate(ip_addrs, start=1):
+        alt_name_lines.append(f"IP.{index} = {address}")
+
+    tls_config.parent.mkdir(parents=True, exist_ok=True)
+    tls_config.write_text(
+        "\n".join(
+            [
+                "[ req ]",
+                "default_bits = 2048",
+                "prompt = no",
+                "default_md = sha256",
+                "distinguished_name = req_distinguished_name",
+                "req_extensions = req_ext",
+                "",
+                "[ req_distinguished_name ]",
+                f"CN = {common_name}",
+                "",
+                "[ req_ext ]",
+                "subjectAltName = @alt_names",
+                "basicConstraints = CA:FALSE",
+                "keyUsage = digitalSignature, keyEncipherment",
+                "extendedKeyUsage = serverAuth",
+                "",
+                "[ alt_names ]",
+                *alt_name_lines,
+                "",
+                "[ v3_ca ]",
+                "subjectKeyIdentifier = hash",
+                "authorityKeyIdentifier = keyid:always,issuer",
+                "basicConstraints = critical, CA:true",
+                "keyUsage = critical, digitalSignature, cRLSign, keyCertSign",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _cert_has_required_sans(openssl: str, cert_path: Path, dns_names: list[str], ip_addrs: list[str]) -> bool:
+    result = subprocess.run(
+        [openssl, "x509", "-in", str(cert_path), "-noout", "-text"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return False
+
+    cert_text = result.stdout or ""
+    return all(f"DNS:{name}" in cert_text for name in dns_names) and all(
+        f"IP Address:{address}" in cert_text for address in ip_addrs
+    )
+
+
+def ensure_skillserver_tls(root: Path) -> bool:
+    cert_dir = root / HTTPS_CERT_DIR
     ca_key = cert_dir / "local-ca.key"
     ca_cert = cert_dir / "local-ca.crt"
     server_key = cert_dir / "local-https.key"
@@ -136,8 +302,13 @@ def ensure_skillserver_tls(root: Path) -> bool:
         fail("未找到 openssl，无法生成共享 HTTPS 自签证书")
         return False
 
+    dns_names, ip_addrs = _desired_tls_names(root)
+    _render_tls_config(root, dns_names, ip_addrs)
+    tls_config = root / HTTPS_TLS_CONFIG
+
     current_server_end_year = _cert_end_year(openssl, server_cert) if server_cert.exists() else None
     current_ca_end_year = _cert_end_year(openssl, ca_cert) if ca_cert.exists() else None
+    has_required_sans = _cert_has_required_sans(openssl, server_cert, dns_names, ip_addrs) if server_cert.exists() else False
 
     if (
         all(path.exists() for path in required)
@@ -145,6 +316,7 @@ def ensure_skillserver_tls(root: Path) -> bool:
         and current_server_end_year >= SKILLSERVER_TLS_TARGET_DATE.year
         and current_ca_end_year is not None
         and current_ca_end_year >= SKILLSERVER_TLS_TARGET_DATE.year
+        and has_required_sans
     ):
         ok("复用已有共享 HTTPS 证书")
         return True
@@ -154,9 +326,8 @@ def ensure_skillserver_tls(root: Path) -> bool:
             "共享 HTTPS 证书有效期不足，将重签到 "
             f"{SKILLSERVER_TLS_TARGET_DATE.isoformat()}"
         )
-    if not tls_config.exists():
-        fail(f"缺少 TLS 配置文件: {tls_config}")
-        return False
+    if not has_required_sans and server_cert.exists():
+        info("共享 HTTPS 证书 SAN 不包含当前访问地址，将重新签发")
 
     cert_dir.mkdir(parents=True, exist_ok=True)
     for path in [ca_key, ca_cert, server_key, server_csr, server_cert, fullchain_cert, serial_file]:
@@ -356,6 +527,8 @@ def ensure_env_defaults(root: Path) -> None:
         write_env_var(root, "HERMES_UID", str(os.getuid()), "Docker 里 Hermes 进程使用的 UID")
     if not read_env_var(root, "HERMES_GID"):
         write_env_var(root, "HERMES_GID", str(os.getgid()), "Docker 里 Hermes 进程使用的 GID")
+    if not read_env_var(root, "HERMES_BIND_HOST"):
+        write_env_var(root, "HERMES_BIND_HOST", "0.0.0.0", "HTTPS 入口绑定地址；127.0.0.1 仅本机访问，0.0.0.0 允许本机和局域网访问")
     if not read_env_var(root, "HERMES_DASHBOARD_PORT"):
         write_env_var(root, "HERMES_DASHBOARD_PORT", str(DASHBOARD_PORT), "Hermes Dashboard 本地端口")
     if not read_env_var(root, "API_SERVER_PORT"):
@@ -364,6 +537,8 @@ def ensure_env_defaults(root: Path) -> None:
         write_env_var(root, "HERMES_WEBUI_PORT", str(HERMES_WEBUI_PORT), "Hermes WebUI 本地端口")
     if not read_env_var(root, "TZ"):
         write_env_var(root, "TZ", "Asia/Shanghai", "时区")
+    if not read_env_var(root, "HERMES_TLS_COMMON_NAME"):
+        write_env_var(root, "HERMES_TLS_COMMON_NAME", "hermes-local", "HTTPS 证书通用名（CN）")
     ensure_env_secret(root, "API_SERVER_KEY", "Hermes API Server Bearer Key")
     ensure_env_secret(root, "SEARXNG_SECRET", "SearXNG Secret")
 
